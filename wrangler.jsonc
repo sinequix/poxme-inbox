@@ -1,9 +1,7 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "poxme-inbox",
-	"account_id": "b9f5ebc6c05975fab56f056782461b77",
-	// No workers.dev hostname. The app hostname is inbox.sinequix.com.
-	// Apex sinequix.com mail stays on Google Workspace.
+	// No workers.dev hostname. Production mail is mail.pox.me.
 	"workers_dev": false,
 	"compatibility_date": "2025-11-28",
 	"main": "./workers/app.ts",
@@ -14,16 +12,14 @@
 		"nodejs_compat"
 	],
 	"vars": {
-		// Sign-in stays on the pox.me Logto issuer. The inbox itself is inbox.sinequix.com.
-		// Set INTERNAL_SECRET before deploy.
-		"DOMAINS": "inbox.sinequix.com",
+		// Sign-in is Logto at auth.pox.me. Set INTERNAL_SECRET before deploy.
+		"DOMAINS": "mail.pox.me",
 		"EMAIL_ADDRESSES": [],
 		"LOGTO_ENDPOINT": "https://auth.pox.me",
 		"TRUSTED_FIRST_PARTY_CLIENT_IDS": "rJRFhVAXTMYlAQeyiYkBC,poxme-webapp,poxme-credential-link",
-		// Logto resource indicator for direct SPA tokens. Register this audience
-		// on auth.pox.me before those tokens are used. api.pox.me calls use the
-		// internal-secret bypass and do not exercise Logto.
-		"API_AUDIENCE": "https://inbox.sinequix.com"
+		// Logto resource indicator for direct SPA tokens. api.pox.me calls use
+		// the internal-secret bypass and do not exercise Logto.
+		"API_AUDIENCE": "https://mail.pox.me"
 		// MCP_ENABLED and AGENT_WEBSOCKET_ENABLED intentionally remain unset.
 		// Do not enable them until DO names and all mailbox tool arguments are
 		// enforced against the authenticated Logto subject.
@@ -69,12 +65,6 @@
 			}
 		]
 	},
-	"routes": [
-		{
-			"pattern": "inbox.sinequix.com",
-			"custom_domain": true
-		}
-	],
 	"migrations": [
 		{
 			"tag": "v1",

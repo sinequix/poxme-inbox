@@ -848,7 +848,7 @@ app.post("/_test/seed-poxme-db", async (c: AppContext) => {
 	await c.env.POXME_DB.batch([
 		insert.bind(
 			"mig-1", "mig-user-1", "inbox", "email", null, "inbound",
-			'["me@inbox.sinequix.com"]', "Migrated One", "body one", 0, 0, null,
+			'["me@mail.pox.me"]', "Migrated One", "body one", 0, 0, null,
 			"mig-user-1/aaa.eml", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z",
 		),
 		insert.bind(

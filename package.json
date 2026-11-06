@@ -13,7 +13,7 @@
 		],
 		"bindings": {
 			"DOMAINS": {
-				"description": "Domain that receives mail for this inbox. This project uses inbox.sinequix.com."
+				"description": "Domain that receives mail for this inbox. pox.me uses mail.pox.me."
 			}
 		}
 	},
