@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Sinequix
+// Licensed under the Apache 2.0 license found in the LICENSE file or at:
+//     https://opensource.org/licenses/Apache-2.0
+
 // poxme integration — configurable Workers AI model selection.
 //
 // Upstream agentic-inbox hard-coded model IDs, several of which Cloudflare has
