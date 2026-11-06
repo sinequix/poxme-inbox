@@ -168,4 +168,76 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_emails_folder_date ON emails(folder_id, date DESC);
         `,
 	},
+	{
+		name: "9_poxme_unified_columns",
+		sql: `
+    ALTER TABLE emails ADD COLUMN source TEXT NOT NULL DEFAULT 'email';
+    ALTER TABLE emails ADD COLUMN direction TEXT NOT NULL DEFAULT 'inbound';
+    ALTER TABLE emails ADD COLUMN source_id TEXT;
+    ALTER TABLE emails ADD COLUMN source_metadata TEXT;
+    ALTER TABLE emails ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE emails ADD COLUMN from_name TEXT;
+    ALTER TABLE emails ADD COLUMN address TEXT;
+    ALTER TABLE emails ADD COLUMN identity_id TEXT;
+    ALTER TABLE emails ADD COLUMN form_id TEXT;
+    ALTER TABLE emails ADD COLUMN submission_id TEXT;
+    ALTER TABLE emails ADD COLUMN text_body TEXT;
+    ALTER TABLE emails ADD COLUMN html TEXT;
+    ALTER TABLE emails ADD COLUMN snippet TEXT;
+    ALTER TABLE emails ADD COLUMN size_bytes INTEGER;
+    ALTER TABLE emails ADD COLUMN has_attachments INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE emails ADD COLUMN raw_s3_key TEXT;
+    ALTER TABLE emails ADD COLUMN received_at TEXT;
+    ALTER TABLE emails ADD COLUMN created_at TEXT;
+  `,
+	},
+	{
+		name: "10_poxme_folder_aliases",
+		sql: `INSERT OR IGNORE INTO folders (id, name, is_deletable) VALUES ('archived', 'Archived', 0), ('drafts', 'Drafts', 0);`,
+	},
+	{
+		name: "11_poxme_indexes",
+		sql: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_message_id ON emails(message_id) WHERE message_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_source_id ON emails(source, source_id) WHERE source_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_emails_source ON emails(source);
+    CREATE INDEX IF NOT EXISTS idx_emails_address ON emails(address);
+  `,
+	},
+	{
+		name: "12_poxme_config_tables",
+		sql: `
+    CREATE TABLE IF NOT EXISTS email_rules (
+      id TEXT PRIMARY KEY,
+      address TEXT NOT NULL,
+      name TEXT NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 100,
+      active INTEGER NOT NULL DEFAULT 1,
+      condition_from TEXT,
+      condition_subject TEXT,
+      condition_has_attachment INTEGER,
+      action TEXT NOT NULL DEFAULT 'store',
+      folder TEXT DEFAULT 'inbox',
+      destination TEXT,
+      also_store INTEGER DEFAULT 0,
+      reject_reason TEXT,
+      reply_subject TEXT,
+      reply_body TEXT,
+      webhook_url TEXT,
+      stop_processing INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_email_rules_address ON email_rules(address, active);
+    CREATE TABLE IF NOT EXISTS tag_categories (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      color TEXT DEFAULT '#6B7280',
+      icon TEXT,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tag_categories_name ON tag_categories(name);
+  `,
+	},
 ];

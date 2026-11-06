@@ -60,6 +60,9 @@ interface SearchFilterOptions {
 	is_read?: boolean;
 	is_starred?: boolean;
 	has_attachment?: boolean;
+	source?: string;
+	tag?: string;
+	unread?: boolean;
 }
 
 interface GetEmailsOptions {
@@ -87,6 +90,23 @@ interface EmailData {
 	thread_id?: string | null;
 	message_id?: string | null;
 	raw_headers?: string | null;
+	// poxme unified columns (optional; nullable/defaulted so existing callers keep working)
+	source?: string;
+	direction?: string;
+	source_id?: string | null;
+	source_metadata?: string | null;
+	address?: string | null;
+	from_name?: string | null;
+	text_body?: string | null;
+	html?: string | null;
+	snippet?: string | null;
+	size_bytes?: number | null;
+	has_attachments?: boolean;
+	identity_id?: string | null;
+	raw_s3_key?: string | null;
+	tags?: string[];
+	received_at?: string;
+	created_at?: string;
 }
 
 interface AttachmentData {
@@ -99,7 +119,64 @@ interface AttachmentData {
 	disposition?: string | null;
 }
 
-export class MailboxDO extends DurableObject<Env> {
+/**
+ * A row read verbatim from poxme's D1 `emails` table (poxme-api-db) during
+ * the one-time Phase 6 migration. Column names are D1 snake_case; several
+ * differ from the DO schema (e.g. `recipients` JSON array, `references_header`,
+ * `is_read`). Fields are loosely typed because they come straight off a
+ * `SELECT *` and may be null.
+ */
+export interface D1EmailRow {
+	id: string;
+	user_id?: string;
+	message_id?: string | null;
+	thread_id?: string | null;
+	folder?: string | null;
+	subject?: string | null;
+	sender?: string | null;
+	from_name?: string | null;
+	recipients?: string | null;
+	snippet?: string | null;
+	text_body?: string | null;
+	html?: string | null;
+	raw_s3_key?: string | null;
+	is_read?: number | null;
+	has_attachments?: number | null;
+	size_bytes?: number | null;
+	attachments_meta?: string | null;
+	in_reply_to?: string | null;
+	references_header?: string | null;
+	tags?: string | null;
+	starred?: number | null;
+	source?: string | null;
+	source_id?: string | null;
+	source_metadata?: string | null;
+	direction?: string | null;
+	identity_id?: string | null;
+	form_id?: string | null;
+	submission_id?: string | null;
+	received_at?: string | null;
+	created_at?: string | null;
+}
+
+/**
+ * Map a poxme D1 folder NAME to a DO folder id. Tolerates the legacy
+ * singular `draft`/`archive` names by folding them onto the current
+ * `drafts`/`archived` ids. Values already equal to a DO folder id pass
+ * through unchanged.
+ */
+const D1_FOLDER_TO_DO_FOLDER: Record<string, string> = {
+	inbox: "inbox",
+	sent: "sent",
+	drafts: "drafts",
+	archived: "archived",
+	trash: "trash",
+	spam: "spam",
+	draft: "drafts",
+	archive: "archived",
+};
+
+export class CommsDO extends DurableObject<Env> {
 	declare __DURABLE_OBJECT_BRAND: never;
 	db: ReturnType<typeof drizzle>;
 
@@ -107,6 +184,10 @@ export class MailboxDO extends DurableObject<Env> {
 		super(state, env);
 		this.db = drizzle(this.ctx.storage, { schema });
 		applyMigrations(this.ctx.storage.sql, mailboxMigrations, this.ctx.storage);
+	}
+
+	async purgeAll(): Promise<void> {
+		await this.ctx.storage.deleteAll();
 	}
 
 	// ── Email CRUD (Drizzle) ───────────────────────────────────────
@@ -659,7 +740,7 @@ export class MailboxDO extends DurableObject<Env> {
 		options: SearchFilterOptions,
 		tableAlias = "",
 	): { conditions: string[]; params: (string | number)[] } {
-		const { query, folder, from, to, subject, date_start, date_end, is_read, is_starred, has_attachment } = options;
+		const { query, folder, from, to, subject, date_start, date_end, is_read, is_starred, has_attachment, source, tag, unread } = options;
 		const prefix = tableAlias ? `${tableAlias}.` : "";
 		const conditions: string[] = [];
 		const params: (string | number)[] = [];
@@ -671,25 +752,33 @@ export class MailboxDO extends DurableObject<Env> {
 			return `?${paramIdx}`;
 		};
 
+		// Guard against pathological LIKE inputs (upstream #36/#40): SQLite's
+		// LIKE degrades badly on very long patterns, so cap the term length.
+		const clampTerm = (value: string) => (value.length > 512 ? value.slice(0, 512) : value);
+
 		if (query) {
-			const p1 = addParam(`%${query}%`);
-			const p2 = addParam(`%${query}%`);
-			const p3 = addParam(`%${query}%`);
-			const p4 = addParam(`%${query}%`);
+			const term = clampTerm(query);
+			const p1 = addParam(`%${term}%`);
+			const p2 = addParam(`%${term}%`);
+			const p3 = addParam(`%${term}%`);
+			const p4 = addParam(`%${term}%`);
 			conditions.push(`(${prefix}subject LIKE ${p1} OR ${prefix}body LIKE ${p2} OR ${prefix}sender LIKE ${p3} OR ${prefix}recipient LIKE ${p4} OR ${prefix}cc LIKE ${p4} OR ${prefix}bcc LIKE ${p4})`);
 		}
 		if (folder) {
 			const p = addParam(folder);
 			conditions.push(`${prefix}folder_id = (SELECT id FROM folders WHERE name = ${p} OR id = ${p} LIMIT 1)`);
 		}
-		if (from) { const p = addParam(`%${from}%`); conditions.push(`${prefix}sender LIKE ${p}`); }
-		if (to) { const p = addParam(`%${to}%`); conditions.push(`(${prefix}recipient LIKE ${p} OR ${prefix}cc LIKE ${p} OR ${prefix}bcc LIKE ${p})`); }
-		if (subject) { const p = addParam(`%${subject}%`); conditions.push(`${prefix}subject LIKE ${p}`); }
+		if (from) { const p = addParam(`%${clampTerm(from)}%`); conditions.push(`${prefix}sender LIKE ${p}`); }
+		if (to) { const p = addParam(`%${clampTerm(to)}%`); conditions.push(`(${prefix}recipient LIKE ${p} OR ${prefix}cc LIKE ${p} OR ${prefix}bcc LIKE ${p})`); }
+		if (subject) { const p = addParam(`%${clampTerm(subject)}%`); conditions.push(`${prefix}subject LIKE ${p}`); }
 		if (date_start) { const p = addParam(date_start); conditions.push(`${prefix}date >= ${p}`); }
 		if (date_end) { const p = addParam(date_end); conditions.push(`${prefix}date <= ${p}`); }
 		if (is_read !== undefined) { const p = addParam(is_read ? 1 : 0); conditions.push(`${prefix}read = ${p}`); }
+		if (unread) { conditions.push(`${prefix}read = 0`); }
 		if (is_starred !== undefined) { const p = addParam(is_starred ? 1 : 0); conditions.push(`${prefix}starred = ${p}`); }
 		if (has_attachment) { conditions.push(`${prefix}id IN (SELECT DISTINCT email_id FROM attachments)`); }
+		if (source) { const p = addParam(source); conditions.push(`${prefix}source = ${p}`); }
+		if (tag) { const p = addParam(tag); conditions.push(`EXISTS (SELECT 1 FROM json_each(${prefix}tags) WHERE json_each.value = ${p})`); }
 
 		return { conditions, params };
 	}
@@ -703,10 +792,12 @@ export class MailboxDO extends DurableObject<Env> {
 		const offset = (page - 1) * limit;
 
 		const query = `
-			SELECT e.id, e.subject, e.sender, e.recipient, e.cc, e.bcc, e.date,
+			SELECT e.id, e.subject, e.sender, e.from_name, e.recipient, e.cc, e.bcc, e.date,
 				e.read, e.starred, e.in_reply_to, e.email_references,
-				e.thread_id, e.folder_id,
-				SUBSTR(e.body, 1, 300) as snippet,
+				e.thread_id, e.folder_id, e.source, e.direction, e.source_id, e.source_metadata,
+				e.identity_id, e.form_id, e.submission_id, e.message_id, e.size_bytes,
+				e.has_attachments, e.tags,
+				SUBSTR(COALESCE(e.snippet, e.body), 1, 300) as snippet,
 				f.name as folder_name
 			FROM emails e
 			LEFT JOIN folders f ON e.folder_id = f.id
@@ -862,11 +953,404 @@ export class MailboxDO extends DurableObject<Env> {
 				thread_id: email.thread_id ?? null,
 				message_id: email.message_id ?? null,
 				raw_headers: email.raw_headers ?? null,
+				source: email.source ?? "email",
+				direction: email.direction ?? "inbound",
+				source_id: email.source_id ?? null,
+				source_metadata: email.source_metadata ?? null,
+				address: email.address ?? null,
+				from_name: email.from_name ?? null,
+				text_body: email.text_body ?? null,
+				html: email.html ?? null,
+				snippet: email.snippet ?? null,
+				size_bytes: email.size_bytes ?? null,
+				has_attachments: email.has_attachments ? 1 : 0,
+				identity_id: email.identity_id ?? null,
+				raw_s3_key: email.raw_s3_key ?? null,
+				tags: JSON.stringify(email.tags ?? []),
+				received_at: email.received_at ?? email.date,
+				created_at: email.created_at ?? email.date,
 			})
 			.run();
 
 		if (attachments.length > 0) {
 			this.db.insert(schema.attachments).values(attachments).run();
 		}
+	}
+
+	// ── Unified per-user views (raw SQL) ───────────────────────────
+
+	/** Parse a stored tags JSON column, tolerating null/malformed values. */
+	#parseTags(raw: unknown): string[] {
+		if (typeof raw !== "string") return [];
+		try {
+			const parsed = JSON.parse(raw);
+			return Array.isArray(parsed) ? parsed : [];
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * Build the WHERE clause + params for the unified inbox listing.
+	 * Shared between listInbox and countInbox.
+	 */
+	#buildInboxConditions(
+		options: { source?: string; folder?: string; identity_id?: string; starred?: boolean; unread?: boolean },
+	): { where: string; params: (string | number)[] } {
+		const { source, folder, identity_id, starred, unread } = options;
+		const conditions: string[] = [];
+		const params: (string | number)[] = [];
+
+		if (source) {
+			params.push(source);
+			conditions.push(`source = ?${params.length}`);
+		}
+		if (folder) {
+			params.push(folder);
+			const p = `?${params.length}`;
+			conditions.push(`folder_id = (SELECT id FROM folders WHERE name = ${p} OR id = ${p} LIMIT 1)`);
+		}
+		if (identity_id) {
+			params.push(identity_id);
+			conditions.push(`identity_id = ?${params.length}`);
+		}
+		if (starred !== undefined) {
+			conditions.push(`starred = ${starred ? 1 : 0}`);
+		}
+		if (unread) {
+			conditions.push(`read = 0`);
+		}
+
+		const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+		return { where, params };
+	}
+
+	async listInbox(options: { source?: string; folder?: string; identity_id?: string; starred?: boolean; unread?: boolean; page?: number; limit?: number } = {}) {
+		const { source, folder, identity_id, starred, unread, page = 1, limit: rawLimit = 25 } = options;
+		const limit = Math.min(Math.max(rawLimit, 1), 100);
+		const offset = (page - 1) * limit;
+
+		const { where, params } = this.#buildInboxConditions({ source, folder, identity_id, starred, unread });
+
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id, subject, sender, from_name, recipient, cc, bcc, date, read, starred,
+					thread_id, folder_id, source, direction, source_id, source_metadata,
+					identity_id, form_id, submission_id, message_id, size_bytes,
+					in_reply_to, email_references, has_attachments, tags,
+					SUBSTR(COALESCE(snippet, body), 1, 300) as snippet
+				 FROM emails ${where}
+				 ORDER BY COALESCE(created_at, date) DESC
+				 LIMIT ?${params.length + 1} OFFSET ?${params.length + 2}`,
+				...params, limit, offset,
+			),
+		] as any[];
+
+		return rows.map((row) => ({
+			...row,
+			read: !!row.read,
+			starred: !!row.starred,
+			has_attachments: !!row.has_attachments,
+			tags: this.#parseTags(row.tags),
+		}));
+	}
+
+	async countInbox(options: { source?: string; folder?: string; identity_id?: string; starred?: boolean; unread?: boolean } = {}) {
+		const { where, params } = this.#buildInboxConditions(options);
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`SELECT COUNT(*) as total FROM emails ${where}`,
+				...params,
+			),
+		][0] as { total: number } | undefined;
+		return row?.total ?? 0;
+	}
+
+	async sourceCounts() {
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT source, COUNT(*) as count,
+					SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) as unread
+				 FROM emails
+				 GROUP BY source`,
+			),
+		] as any[];
+		return rows.map((row) => ({
+			source: row.source as string,
+			count: Number(row.count),
+			unread: Number(row.unread),
+		}));
+	}
+
+	async folderCounts() {
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT f.id, f.name,
+					COUNT(e.id) as total,
+					COALESCE(SUM(CASE WHEN e.read = 0 THEN 1 ELSE 0 END), 0) as unread
+				 FROM folders f
+				 LEFT JOIN emails e ON e.folder_id = f.id
+				 GROUP BY f.id, f.name`,
+			),
+		] as any[];
+
+		const starredRow = [
+			...this.ctx.storage.sql.exec(
+				`SELECT COUNT(*) as starred FROM emails WHERE starred = 1`,
+			),
+		][0] as { starred: number } | undefined;
+
+		return {
+			folders: rows.map((row) => ({
+				id: row.id as string,
+				name: row.name as string,
+				total: Number(row.total),
+				unread: Number(row.unread),
+			})),
+			starred: starredRow?.starred ?? 0,
+		};
+	}
+
+	async ingest(row: {
+		id?: string;
+		source: string;
+		source_id?: string;
+		direction?: string;
+		subject?: string;
+		sender?: string;
+		from_name?: string;
+		recipient?: string;
+		snippet?: string;
+		text_body?: string;
+		html?: string;
+		body?: string;
+		tags?: string[];
+		identity_id?: string;
+		source_metadata?: unknown;
+		folder?: string;
+		date?: string;
+	}) {
+		const folderName = row.folder ?? Folders.INBOX;
+		const folderRow = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1`,
+				folderName,
+			),
+		][0] as { id: string } | undefined;
+		if (!folderRow) {
+			throw new Error(
+				`ingest: folder "${folderName}" not found. ` +
+					"Ensure the folder exists before ingesting a message.",
+			);
+		}
+
+		const id = row.id ?? crypto.randomUUID();
+		const date = row.date ?? new Date().toISOString();
+		const body = row.body ?? row.html ?? row.text_body ?? "";
+		const tags = JSON.stringify(row.tags ?? []);
+		const sourceMetadata =
+			row.source_metadata === undefined || row.source_metadata === null
+				? null
+				: typeof row.source_metadata === "string"
+					? row.source_metadata
+					: JSON.stringify(row.source_metadata);
+
+		// OR IGNORE relies on the unique (source, source_id) partial index for dedup.
+		const cursor = this.ctx.storage.sql.exec(
+			`INSERT OR IGNORE INTO emails
+				(id, folder_id, source, direction, source_id, source_metadata,
+				 subject, sender, from_name, recipient, body, text_body, html,
+				 snippet, tags, identity_id, date, created_at, read, starred, has_attachments)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, 0, 0, 0)`,
+			id,
+			folderRow.id,
+			row.source,
+			row.direction ?? "inbound",
+			row.source_id ?? null,
+			sourceMetadata,
+			row.subject ?? null,
+			row.sender ?? null,
+			row.from_name ?? null,
+			row.recipient ?? null,
+			body,
+			row.text_body ?? null,
+			row.html ?? null,
+			row.snippet ?? null,
+			tags,
+			row.identity_id ?? null,
+			date,
+			date,
+		);
+
+		return { id, inserted: cursor.rowsWritten > 0 };
+	}
+
+	/**
+	 * Import a single row from poxme's D1 `emails` table into this user's DO.
+	 * One-time, idempotent (Phase 6). Dedup is keyed on the primary key `id`
+	 * via INSERT OR IGNORE, so re-running the migration never duplicates.
+	 *
+	 * Attachments are METADATA-ONLY here: we preserve `has_attachments` and
+	 * `raw_s3_key` so the raw .eml can be lazily re-parsed later, but we do
+	 * NOT create attachment rows.
+	 */
+	async importEmail(row: D1EmailRow): Promise<{ imported: boolean }> {
+		// Resolve target folder id: apply the D1→DO name mapping, then verify
+		// the result against this DO's folders table. Default to 'inbox' when
+		// the folder is unknown/missing.
+		const rawFolder = row.folder ?? "inbox";
+		const mappedFolder = D1_FOLDER_TO_DO_FOLDER[rawFolder] ?? rawFolder;
+		const folderRow = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id FROM folders WHERE id = ?1 OR name = ?1 LIMIT 1`,
+				mappedFolder,
+			),
+		][0] as { id: string } | undefined;
+		const folderId = folderRow?.id ?? "inbox";
+
+		// Recipients arrive as a JSON array text column. Parse to a display
+		// string ("a, b") and take the first entry as the primary address.
+		let recipient: string | null = null;
+		let address: string | null = null;
+		if (typeof row.recipients === "string") {
+			try {
+				const parsed = JSON.parse(row.recipients);
+				if (Array.isArray(parsed)) {
+					recipient = parsed.join(", ");
+					address = parsed[0] ?? null;
+				} else {
+					recipient = row.recipients;
+				}
+			} catch {
+				recipient = row.recipients;
+			}
+		} else {
+			recipient = row.recipients ?? null;
+		}
+
+		const date = row.received_at ?? row.created_at ?? new Date().toISOString();
+		const body = row.html ?? row.text_body ?? "";
+
+		const cursor = this.ctx.storage.sql.exec(
+			`INSERT OR IGNORE INTO emails
+				(id, folder_id, subject, sender, from_name, recipient, cc, bcc, date,
+				 read, starred, body, in_reply_to, email_references, thread_id, message_id,
+				 raw_headers, source, direction, source_id, source_metadata, address,
+				 text_body, html, snippet, size_bytes, has_attachments, identity_id,
+				 form_id, submission_id, raw_s3_key, tags, received_at, created_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+				 ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29,
+				 ?30, ?31, ?32, ?33, ?34)`,
+			row.id,
+			folderId,
+			row.subject ?? null,
+			row.sender ?? null,
+			row.from_name ?? null,
+			recipient,
+			null, // cc — D1 doesn't separate these here
+			null, // bcc
+			date,
+			row.is_read ? 1 : 0,
+			row.starred ? 1 : 0,
+			body,
+			row.in_reply_to ?? null,
+			row.references_header ?? null,
+			row.thread_id ?? null,
+			row.message_id ?? null,
+			null, // raw_headers
+			row.source ?? "email",
+			row.direction ?? "inbound",
+			row.source_id ?? null,
+			row.source_metadata ?? null,
+			address,
+			row.text_body ?? null,
+			row.html ?? null,
+			row.snippet ?? null,
+			row.size_bytes ?? null,
+			row.has_attachments ? 1 : 0,
+			row.identity_id ?? null,
+			row.form_id ?? null,
+			row.submission_id ?? null,
+			row.raw_s3_key ?? null,
+			row.tags ?? "[]",
+			row.received_at ?? null,
+			row.created_at ?? date,
+		);
+
+		return { imported: cursor.rowsWritten > 0 };
+	}
+
+	async batchOp(ids: string[], action: string) {
+		if (ids.length === 0) return { action, count: 0 };
+
+		const placeholders = ids.map((_, i) => `?${i + 1}`).join(",");
+		const idIn = `id IN (${placeholders})`;
+
+		// Resolve a target folder (by name or id) and move the selected emails.
+		const moveTo = (folder: string) => {
+			const p = `?${ids.length + 1}`;
+			this.ctx.storage.sql.exec(
+				`UPDATE emails SET folder_id = (SELECT id FROM folders WHERE name = ${p} OR id = ${p} LIMIT 1)
+				 WHERE ${idIn}`,
+				...ids,
+				folder,
+			);
+		};
+
+		if (action === "mark_read") {
+			this.ctx.storage.sql.exec(`UPDATE emails SET read = 1 WHERE ${idIn}`, ...ids);
+		} else if (action === "mark_unread") {
+			this.ctx.storage.sql.exec(`UPDATE emails SET read = 0 WHERE ${idIn}`, ...ids);
+		} else if (action === "star") {
+			this.ctx.storage.sql.exec(`UPDATE emails SET starred = 1 WHERE ${idIn}`, ...ids);
+		} else if (action === "unstar") {
+			this.ctx.storage.sql.exec(`UPDATE emails SET starred = 0 WHERE ${idIn}`, ...ids);
+		} else if (action === "archive") {
+			moveTo("archived");
+		} else if (action === "trash") {
+			moveTo(Folders.TRASH);
+		} else if (action === "spam") {
+			moveTo(Folders.SPAM);
+		} else if (action.startsWith("move:")) {
+			moveTo(action.slice("move:".length));
+		} else if (action === "delete") {
+			// Gather attachment R2 keys first so the caller can clean the bucket.
+			const attachmentRows = [
+				...this.ctx.storage.sql.exec(
+					`SELECT email_id, id, filename FROM attachments WHERE email_id IN (${placeholders})`,
+					...ids,
+				),
+			] as any[];
+			const deletedAttachmentKeys = attachmentRows.map(
+				(a) => `attachments/${a.email_id}/${a.id}/${a.filename}`,
+			);
+			this.ctx.storage.sql.exec(`DELETE FROM emails WHERE ${idIn}`, ...ids);
+			return { action, affected: ids, deletedAttachmentKeys };
+		} else if (action.startsWith("tag:") || action.startsWith("untag:")) {
+			const isTag = action.startsWith("tag:");
+			const tagValue = action.slice(isTag ? "tag:".length : "untag:".length);
+			for (const id of ids) {
+				const existing = [
+					...this.ctx.storage.sql.exec(
+						`SELECT tags FROM emails WHERE id = ?1`,
+						id,
+					),
+				][0] as { tags: string } | undefined;
+				if (!existing) continue;
+				const current = this.#parseTags(existing.tags);
+				const next = isTag
+					? current.includes(tagValue) ? current : [...current, tagValue]
+					: current.filter((t) => t !== tagValue);
+				this.ctx.storage.sql.exec(
+					`UPDATE emails SET tags = ?1 WHERE id = ?2`,
+					JSON.stringify(next),
+					id,
+				);
+			}
+		} else {
+			throw new Error(`batchOp: unsupported action "${action}"`);
+		}
+
+		return { action, count: ids.length };
 	}
 }

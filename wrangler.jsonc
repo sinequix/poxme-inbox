@@ -1,6 +1,10 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "agentic-inbox",
+	"name": "poxme-inbox",
+	"account_id": "b9f5ebc6c05975fab56f056782461b77",
+	// Locked down after the one-time migration. Re-enable (or add a mail.pox.me
+	// route) as part of the live traffic cutover. Reachable via service binding.
+	"workers_dev": false,
 	"compatibility_date": "2025-11-28",
 	"main": "./workers/app.ts",
 	"observability": {
@@ -10,11 +14,21 @@
 		"nodejs_compat"
 	],
 	"vars": {
-		// Production deploys must also define POLICY_AUD and TEAM_DOMAIN.
-		// TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
-		// The worker now fails closed outside local development if Access is not configured.
-		"DOMAINS": "example.com",
-		"EMAIL_ADDRESSES": []
+		// poxme integration: auth is Logto (auth.pox.me), not Cloudflare Access.
+		// Set LOGTO_ENDPOINT / API_AUDIENCE / INTERNAL_SECRET (secret) before deploy.
+		"DOMAINS": "mail.pox.me",
+		"EMAIL_ADDRESSES": [],
+		"LOGTO_ENDPOINT": "https://auth.pox.me",
+		"TRUSTED_FIRST_PARTY_CLIENT_IDS": "rJRFhVAXTMYlAQeyiYkBC,poxme-webapp,poxme-credential-link",
+		// Logto resource indicator (registered in logto-db as "Poxme Inbox").
+		// Direct SPA→poxme-inbox tokens carry this audience; the current api.pox.me
+		// path uses the internal-secret bypass and does not exercise Logto.
+		"API_AUDIENCE": "https://mail.pox.me"
+		// MCP_ENABLED and AGENT_WEBSOCKET_ENABLED intentionally remain unset.
+		// Do not enable them until DO names and all mailbox tool arguments are
+		// enforced against the authenticated Logto subject.
+		// Workers-AI model IDs are overridable via AI_MODEL_CHAT / AI_MODEL_INJECTION /
+		// AI_MODEL_VERIFY (see workers/lib/ai-config.ts). Defaults are current as of 2026-07.
 	},
 	"send_email": [
 		{
@@ -25,8 +39,15 @@
 	"r2_buckets": [
 		{
 			"binding": "BUCKET",
-			"bucket_name": "agentic-inbox",
-			"preview_bucket_name": "agentic-inbox"
+			"bucket_name": "poxme-emails",
+			"preview_bucket_name": "poxme-emails"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "POXME_DB",
+			"database_name": "poxme-api-db",
+			"database_id": "34a5f51e-305e-4bbe-b0d3-bee9b4d4e43f"
 		}
 	],
 	"ai": {
@@ -35,8 +56,8 @@
 	"durable_objects": {
 		"bindings": [
 			{
-				"name": "MAILBOX",
-				"class_name": "MailboxDO"
+				"name": "COMMS",
+				"class_name": "CommsDO"
 			},
 			{
 				"name": "EMAIL_AGENT",
@@ -52,7 +73,7 @@
 		{
 			"tag": "v1",
 			"new_sqlite_classes": [
-				"MailboxDO"
+				"CommsDO"
 			]
 		},
 		{

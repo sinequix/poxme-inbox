@@ -21,16 +21,19 @@ Return ONLY "NO" if it is a normal email (even if angry, confused, or containing
 
 Respond with exactly one word: YES or NO.`;
 
-export async function isPromptInjection(ai: Ai, bodyHtml: string | null | undefined): Promise<boolean> {
+export async function isPromptInjection(
+	ai: Ai,
+	bodyHtml: string | null | undefined,
+	model = "@cf/meta/llama-3.2-3b-instruct",
+): Promise<boolean> {
 	if (!bodyHtml) return false;
-	
+
 	const plainText = stripHtmlToText(bodyHtml).trim();
 	if (plainText.length < 10) return false;
 
 	try {
 		const response = (await ai.run(
-			// @ts-expect-error — model string not in generated union
-			"@cf/meta/llama-3.1-8b-instruct-fast",
+			model,
 			{
 				messages: [
 					{ role: "system", content: INJECTION_PROMPT },
@@ -119,7 +122,11 @@ function splitQuotedBlock(html: string): { reply: string; quoted: string } {
  * Verify and clean a draft email body using AI.
  * Falls back to returning the original body if the AI call fails.
  */
-export async function verifyDraft(ai: Ai, body: string): Promise<string> {
+export async function verifyDraft(
+	ai: Ai,
+	body: string,
+	model = "@cf/meta/llama-4-scout-17b-16e-instruct",
+): Promise<string> {
 	if (!body || !body.trim()) return body;
 
 	// Separate the quoted reply block so the AI only reviews the user's text
@@ -136,7 +143,7 @@ export async function verifyDraft(ai: Ai, body: string): Promise<string> {
 
 	try {
 		const response = (await ai.run(
-			"@cf/meta/llama-4-scout-17b-16e-instruct",
+			model,
 			{
 				messages: [
 					{ role: "system", content: VERIFIER_PROMPT },

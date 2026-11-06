@@ -8,13 +8,14 @@
  * and attaches it to the Hono context (`c.var.mailboxStub`).
  */
 import { createMiddleware } from "hono/factory";
-import type { MailboxDO } from "../durableObject";
+import type { CommsDO } from "../durableObject";
 import type { Env } from "../types";
 
 export type MailboxContext = {
 	Bindings: Env;
 	Variables: {
-		mailboxStub: DurableObjectStub<MailboxDO>;
+		mailboxStub: DurableObjectStub<CommsDO>;
+		userId: string;
 	};
 };
 
@@ -31,7 +32,7 @@ export const requireMailbox = createMiddleware<MailboxContext>(async (c, next) =
 	}
 
 	// Instantiate DO stub
-	const ns = c.env.MAILBOX;
+	const ns = c.env.COMMS;
 	const id = ns.idFromName(mailboxId);
 	const stub = ns.get(id);
 

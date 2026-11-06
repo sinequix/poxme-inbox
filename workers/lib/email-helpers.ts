@@ -8,7 +8,7 @@
  * Includes: DO stub helpers, sender validation, message-ID generation,
  * threading, HTML utilities, and tool-logic (getFullEmail / getFullThread).
  */
-import type { MailboxDO } from "../durableObject";
+import type { CommsDO } from "../durableObject";
 import type { EmailFull } from "./schemas";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
@@ -17,14 +17,14 @@ import { formatQuotedDate } from "../../shared/dates";
 // ── DO Stub ────────────────────────────────────────────────────────
 
 /**
- * Resolve a MailboxDO stub from a mailbox email address.
+ * Resolve a CommsDO stub from a mailbox email address.
  * Replaces the repeated 3-line ns.idFromName / ns.get pattern.
  */
-export function getMailboxStub(
+export function getCommsStub(
 	env: Env,
 	mailboxId: string,
-): DurableObjectStub<MailboxDO> {
-	const ns = env.MAILBOX;
+): DurableObjectStub<CommsDO> {
+	const ns = env.COMMS;
 	const id = ns.idFromName(mailboxId);
 	return ns.get(id);
 }
@@ -137,7 +137,7 @@ export function buildThreadingHeaders(
  * Used by reply/forward routes to avoid threading against the draft itself.
  */
 export async function resolveOriginalEmail(
-	stub: DurableObjectStub<MailboxDO>,
+	stub: DurableObjectStub<CommsDO>,
 	email: EmailFull,
 ): Promise<EmailFull> {
 	if (email.folder_id === Folders.DRAFT && email.in_reply_to) {
@@ -230,7 +230,7 @@ type MailboxThreadReaderStub = {
  * Returns null if the email is not found.
  */
 export async function getFullEmail(
-	stub: DurableObjectStub<MailboxDO>,
+	stub: DurableObjectStub<CommsDO>,
 	emailId: string,
 ) {
 	const email = (await stub.getEmail(emailId)) as EmailFull | null;
@@ -246,7 +246,7 @@ export async function getFullEmail(
  * instead of the previous N+1 pattern (1 list query + N getEmail calls).
  */
 export async function getFullThread(
-	stub: DurableObjectStub<MailboxDO>,
+	stub: DurableObjectStub<CommsDO>,
 	threadId: string,
 ) {
 	const threadStub = stub as unknown as MailboxThreadReaderStub;
